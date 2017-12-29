@@ -76,8 +76,7 @@ def Update(metadata, media, lang, force, movie):
   error_log = { 'AniDB summaries missing'   :[], 'AniDB posters missing'      :[], 'anime-list AniDBid missing':[], 'anime-list studio logos'  :[],  
                 'TVDB posters missing'      :[], 'TVDB season posters missing':[], 'anime-list TVDBid missing' :[], 'Plex themes missing'      :[],
                 'Missing Episodes'          :[], 'Missing Specials'           :[], 'Missing Episode Summaries' :[], 'Missing Special Summaries':[]}
-  if movie:  log = common.PlexLog(file=common.serie_folder(os.path.join(common.CachePath, '_Logs', 'Movies'), media), isAgent=True, mode='a')
-  else:      log = common.PlexLog(file=common.serie_folder(os.path.join(common.CachePath, '_Logs', 'Series'), media), isAgent=True, mode='a')
+  if not movie:  log = common.PlexLog(file=common.serie_folder(os.path.join(common.CachePath, '_Logs', 'Series'), media), isAgent=True, mode='a')
   Log.Info('=== Update ==='.ljust(157, '='))
   Log.Info("id: {}, title: {}, lang: {}, force: {}, movie: {}".format(metadata.id, metadata.title, lang, force, movie))
   #Log.Info("".ljust(157, '='))
