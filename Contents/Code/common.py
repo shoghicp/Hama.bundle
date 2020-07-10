@@ -34,10 +34,12 @@ TVDB_SERIE_URL    = 'https://thetvdb.com/?tab=series&id='  # Used in error_log g
 ANIDB_SERIE_URL   = 'https://anidb.net/anime/'             # Used in error_log generation
 DefaultPrefs      = ("SerieLanguagePriority", "EpisodeLanguagePriority", "PosterLanguagePriority", "MinimumWeight", "adult", "OMDbApiKey") #"Simkl", 
 FieldListMovies   = ('original_title', 'title', 'title_sort', 'roles', 'studio', 'year', 'originally_available_at', 'tagline', 'summary', 'content_rating', 'content_rating_age',
-                     'producers', 'directors', 'writers', 'countries', 'posters', 'art', 'themes', 'rating', 'quotes', 'trivia')
+                     'producers', 'directors', 'writers', 'countries', 'posters', 'art', 'themes', 'rating', 'quotes', 'trivia', 'genres', 'collections')
 FieldListSeries   = ('title', 'title_sort', 'originally_available_at', 'duration','rating',  'reviews', 'collections', 'genres', 'tags' , 'summary', 'extras', 'countries', 'rating_count',
                      'content_rating', 'studio', 'countries', 'posters', 'banners', 'art', 'themes', 'roles', 'original_title', 
                      'rating_image', 'audience_rating', 'audience_rating_image')  # Not in Framework guide 2.1.1, in https://github.com/plexinc-agents/TheMovieDb.bundle/blob/master/Contents/Code/__init__.py
+FieldListCustomMoviesUpdate = {}
+FieldListCustomSeriesUpdate = {'original_title': 'originalTitle'}
 FieldListSeasons  = ('summary','posters', 'art')  #'summary', 
 FieldListEpisodes = ('title', 'summary', 'originally_available_at', 'writers', 'directors', 'producers', 'guest_stars', 'rating', 'thumbs', 'duration', 'content_rating', 'content_rating_age', 'absolute_index') #'titleSort
 SourceList        = ('AniDB', 'MyAnimeList', 'FanartTV', 'OMDb', 'TheTVDB', 'TheMovieDb', 'Plex', 'AnimeLists', 'tvdb4', 'TVTunes', 'Local', 'AniList') #"Simkl", 
@@ -46,15 +48,18 @@ COMMON_HEADERS    = {'User-agent': 'Plex/HAMA', 'Content-type': 'application/jso
 THROTTLE          = {}
 
 ### Plex Library XML ###
-PLEX_LIBRARY, PLEX_LIBRARY_URL = {}, "http://localhost:32400/library/sections/"    # Allow to get the library name to get a log per library https://support.plex.tv/hc/en-us/articles/204059436-Finding-your-account-token-X-Plex-Token
+PLEX_LIBRARY, PLEX_LIBRARY_ID, PLEX_LIBRARY_URL = {}, {}, "http://localhost:32400/library/sections/"    # Allow to get the library name to get a log per library https://support.plex.tv/hc/en-us/articles/204059436-Finding-your-account-token-X-Plex-Token
 def GetPlexLibraries():
   try:
     library_xml = XML.ElementFromURL(PLEX_LIBRARY_URL, cacheTime=0, timeout=float(30), headers={"X-Plex-Token": os.environ['PLEXTOKEN']})
     PLEX_LIBRARY.clear()
+    PLEX_LIBRARY_ID.clear()
     Log.Root('Libraries: ')
     for directory in library_xml.iterchildren('Directory'):
       for location in directory:
-        if directory.get("agent") == "com.plexapp.agents.hama":  PLEX_LIBRARY[location.get("path")] = directory.get("title")  # Only pull libraries that use HAMA to prevent miss identification
+        if directory.get("agent") == "com.plexapp.agents.hama":  # Only pull libraries that use HAMA to prevent miss identification
+          PLEX_LIBRARY[location.get("path")] = directory.get("title")
+          PLEX_LIBRARY_ID[location.get("path")] = directory.get("key")
         Log.Root('[{}] id: {:>2}, type: {:<6}, agent: {:<30}, scanner: {:<30}, library: {:<24}, path: {}'.format('x' if directory.get("agent") == "com.plexapp.agents.hama" else ' ', directory.get("key"), directory.get('type'), directory.get("agent"), directory.get("scanner"), directory.get('title'), location.get("path")))
   except Exception as e:  Log.Root("PLEX_LIBRARY_URL - Exception: '{}'".format(e))
 
@@ -82,6 +87,20 @@ def GetLibraryRootPath(dir, repull_libraries=True):
     else:
       path, root = '_unknown_folder', ''
   return library, root, path
+
+### Get media library id ###
+def GetLibraryId(dir, repull_libraries=True):
+  roots_found, library, root = [], '', ''
+  for root in [os.sep.join(dir.split(os.sep)[0:x+2]) for x in range(0, dir.count(os.sep))]:
+    if root in PLEX_LIBRARY_ID:  roots_found.append(root)
+  if len(roots_found) > 0:
+    root    = max(roots_found)
+    library = PLEX_LIBRARY_ID[root]
+  else:
+    if repull_libraries:
+      GetPlexLibraries()  # Repull library listings as if a library was created while HAMA was already running, it would not be known
+      library = GetLibraryId(dir, repull_libraries=False)  # Try again but don't repull libraries as it will get stuck in an infinite loop
+  return library
 
 class PlexLog(object):
   ''' Logging class to join scanner and agent logging per serie
@@ -556,7 +575,7 @@ def Other_Tags(media, movie, status):  # Other_Tags(media, Dict(AniDB_dict, 'sta
   return tags
   
 ### Update meta field ###
-def UpdateMetaField(metadata_root, metadata, meta_root, fieldList, field, source, movie, source_list):
+def UpdateMetaField(metadata_root, metadata, meta_root, fieldList, field, source, movie, source_list, media):
   if field not in meta_root:  Log.Info('[!] field: "{}" not in meta_root, source: "{}"'.format(field, source));  return
   if type(metadata).__name__=="tuple":  
     ep_string      = ' new season: {:<2}, new_episode: {:<3}'.format(metadata[3], metadata[4])
@@ -603,7 +622,20 @@ def UpdateMetaField(metadata_root, metadata, meta_root, fieldList, field, source
   if isinstance(meta_new, dict) and field=='posters':  Log.Info('[?] meta_new: {}\n    meta_old: {}'.format(DictString(meta_new, 1, 4), DictString(sorted(meta_old.keys(), key=natural_sort_key), 1, 4))) # Can't print meta_old values as plex custom class without a string print call
   if meta_new == meta_old_value or field not in MetaRoleList and (isinstance(meta_new, dict) and set(meta_new.keys()).issubset(meta_old.keys()) or isinstance(meta_new, list) and set(meta_new)== set(meta_old)):
     Log.Info("[=] {field:<23}  {len:>4}  Sources: {sources:<60}  Inside: '{source_list}'  Value: '{value}'".format(field=field, len="({:>2})".format(len(meta_root[field])) if isinstance(meta_root[field], (list, dict)) else "", sources=sources, value=meta_new_short, source_list=source_list))
-  else: 
+    try:
+      if not movie and field in FieldListCustomSeriesUpdate:
+        new_field = FieldListCustomSeriesUpdate[field]
+        library_id = GetLibraryId(GetMediaDir(media, movie))
+        if new_field and library_id and media.id:
+          url = PLEX_LIBRARY_URL + library_id + "/all?type=2&id=" + media.id + "&includeExternalMedia=1&" + new_field + ".value=" + urllib2.quote(
+            meta_new)
+          Log.Info(HTTP.Request(url, method="PUT", cacheTime=0, timeout=float(30), headers={"X-Plex-Token": os.environ['PLEXTOKEN']}))
+    except Exception as e:
+      Log.Info(
+        "[!] {field:<29}  Sources: {sources:<60}  Value: {value}  Exception: {error}".format(field=field, sources=sources,
+                                                                                             value=meta_new_short,
+                                                                                             error=e))
+  else:
     Log.Info("[x] {field:<23}  {len:>4}  Sources: {sources:<60}  Inside: '{source_list}'  Value: '{value}'".format(field=field, len="({:>2})".format(len(meta_root[field])) if isinstance(meta_root[field], (list, dict)) else "", sources=sources, value=meta_new_short, source_list=source_list))
     if isinstance(meta_new, dict) and field in ['posters', 'banners', 'art', 'themes', 'thumbs']:
       for url in meta_new:
@@ -620,8 +652,17 @@ def UpdateMetaField(metadata_root, metadata, meta_root, fieldList, field, source
               if item[field]:  setattr(meta_role, field, item[field]) 
       except Exception as e:  Log.Info("[!] {field:<29}  Sources: {sources:<60}  Value: {value}  Exception: {error}".format(field=field, sources=sources, value=meta_new_short, error=e))
     else:  
-      try:                    setattr(metadata, field, meta_new)  #Type: {format:<20}  #format=type(meta_old).__name__+"/"+type(meta_new).__name__, 
+      try:
+        setattr(metadata, field, meta_new)  #Type: {format:<20}  #format=type(meta_old).__name__+"/"+type(meta_new).__name__,
+        if not movie and field in FieldListCustomSeriesUpdate:
+          new_field = FieldListCustomSeriesUpdate[field]
+          library_id = GetLibraryId(GetMediaDir(media, movie))
+          if new_field and library_id and media.id:
+            url = PLEX_LIBRARY_URL + library_id + "/all?type=2&id=" + media.id + "&includeExternalMedia=1&" + new_field + ".value=" + urllib2.quote(
+              meta_new)
+            Log.Info(HTTP.Request(url, method="PUT", cacheTime=0, timeout=float(30), headers={"X-Plex-Token": os.environ['PLEXTOKEN']}))
       except Exception as e:  Log.Info("[!] {field:<29}  Sources: {sources:<60}  Value: {value}  Exception: {error}".format(field=field, sources=sources, value=meta_new_short, error=e))
+
   
 def UpdateMeta(metadata, media, movie, MetaSources, mappingList):
   """ Update all metadata from a list of Dict according to set priorities 
@@ -679,12 +720,12 @@ def UpdateMeta(metadata, media, movie, MetaSources, mappingList):
             title, rank = Dict(MetaSources, source, 'title'), Dict(MetaSources, source, 'language_rank')
             if rank in (None, ''):  rank = len(languages)
             if rank<language_rank:  MetaSources[source]['title_sort'], language_rank, language_source = SortTitle(title, IsIndex(languages, rank)), rank, source
-          else:  UpdateMetaField(metadata, metadata, MetaSources[source], FieldListMovies if movie else FieldListSeries, field, source, movie, source_list)
+          else:  UpdateMetaField(metadata, metadata, MetaSources[source], FieldListMovies if movie else FieldListSeries, field, source, movie, source_list, media)
           if field in count:  count[field] = count[field] + 1
           if field!='title' and (field not in ['posters', 'art', 'banners', 'themes', 'thumbs', 'title']):  break
       elif not source=="None":  Log.Info("[!] '{}' source not in MetaSources dict, please Check case and spelling".format(source))
     else:
-      if field=='title':                                                     UpdateMetaField(metadata, metadata, Dict(MetaSources, language_source, default={}), FieldListMovies if movie else FieldListSeries, 'title', language_source, movie, source_list)  #titles have multiple assignments, adding only once otherwise duplicated field outputs in logs
+      if field=='title':                                                     UpdateMetaField(metadata, metadata, Dict(MetaSources, language_source, default={}), FieldListMovies if movie else FieldListSeries, 'title', language_source, movie, source_list, media)  #titles have multiple assignments, adding only once otherwise duplicated field outputs in logs
       elif not Dict(count, field) and Prefs[field]!="None" and source_list:  Log.Info("[#] {field:<29}  Sources: {sources:<60}  Inside: {source_list}  Values: {values}".format(field=field, sources='' if field=='season' else Prefs[field], source_list=source_list, values=Dict(MetaSources, source, field)))
     
     #if field=='posters':  metadata.thumbs.validate_keys(meta_new.keys())
@@ -714,7 +755,7 @@ def UpdateMeta(metadata, media, movie, MetaSources, mappingList):
           if source in MetaSources:
             if Dict(MetaSources, source, 'seasons', season, field) or metadata.id.startswith('tvdb4'):
               if field=='posters':  season_posters_list.extend(Dict(MetaSources, source, 'seasons', season, 'posters', default={}).keys())
-              UpdateMetaField(metadata, metadata.seasons[season], Dict(MetaSources, source, 'seasons', season), FieldListSeasons, field, source, movie, source_list)
+              UpdateMetaField(metadata, metadata.seasons[season], Dict(MetaSources, source, 'seasons', season), FieldListSeasons, field, source, movie, source_list, media)
               if field in count:  count[field] = count[field] + 1
               if field not in ['posters', 'art']:  break 
           elif not source=="None": Log.Info("[!] {} Sources: '{}' not in MetaSources".format(field, source))
@@ -743,12 +784,12 @@ def UpdateMeta(metadata, media, movie, MetaSources, mappingList):
                   else:
                     Log.Info('[!] title: {}, language_rank {}, rank: {}, len(languages): "{}"'.format(title, language_rank, rank, len(languages)))
                 else:
-                  UpdateMetaField(metadata, (metadata, season, episode, new_season, new_episode), Dict(MetaSources, source, 'seasons', new_season, 'episodes', new_episode), FieldListEpisodes, field, source, movie, source_list)
+                  UpdateMetaField(metadata, (metadata, season, episode, new_season, new_episode), Dict(MetaSources, source, 'seasons', new_season, 'episodes', new_episode), FieldListEpisodes, field, source, movie, source_list, media)
                 if field in count:  count[field] = count[field] + 1
                 if field!='title' and (field not in ['posters', 'art', 'banners', 'themes', 'thumbs', 'title']):  break
             elif not source=="None":  Log.Info("[!] '{}' source not in MetaSources dict, please Check case and spelling".format(source))
           else:
-            if field=='title' and source_title:                                    UpdateMetaField(metadata, (metadata, season, episode, new_season, new_episode), Dict(MetaSources, source_title, 'seasons', new_season, 'episodes', new_episode), FieldListEpisodes, field, source_title, movie, source_list)
+            if field=='title' and source_title:                                    UpdateMetaField(metadata, (metadata, season, episode, new_season, new_episode), Dict(MetaSources, source_title, 'seasons', new_season, 'episodes', new_episode), FieldListEpisodes, field, source_title, movie, source_list, media)
             elif not Dict(count, field) and field!='seasons' and Prefs[field]!="None" and source_list:  Log.Info("[#] {field:<29}  Sources: {sources:<60}  Inside: {source_list}".format(field=field, sources='' if field=='seasons' else Prefs[field], source_list=source_list))
         if field=='thumbs':    metadata.seasons[season].episodes[episode].thumbs.validate_keys(meta_new.keys())
         # End Of for field
